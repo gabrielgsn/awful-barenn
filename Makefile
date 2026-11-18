@@ -11,7 +11,13 @@ check: barenn
 bench: barenn
 	./bench.sh
 
+NVCC      ?= nvcc
+NVCCFLAGS ?= -O3 -std=c++17 -arch=sm_86 -lineinfo
+
+barenn_cuda: barenn.cu barenn.cpp
+	$(NVCC) $(NVCCFLAGS) barenn.cu -o barenn_cuda
+
 clean:
-	rm -f barenn
+	rm -f barenn barenn_cuda
 
 .PHONY: check bench clean
