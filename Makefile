@@ -1,5 +1,5 @@
 CXX      ?= g++
-CXXFLAGS ?= -O3 -g -std=c++17
+CXXFLAGS ?= -O3 -g -std=c++17 -fopenmp
 
 barenn: barenn.cpp
 	$(CXX) $(CXXFLAGS) barenn.cpp -o barenn
