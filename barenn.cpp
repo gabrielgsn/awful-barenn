@@ -50,15 +50,38 @@ public:
         last_input = input;
         last_z.resize(out_features);
         vector<float> out(out_features);
-        // Cada neurônio soma o viés aos produtos entre entradas e pesos.
-        for (int i = 0; i < out_features; ++i) {
+        // As camadas ocultas usam ReLU. A última devolve escores lineares.
+        auto ativar = [&](int i, float sum) {
+            last_z[i] = sum;
+            out[i] = final ? sum : max(0.0f, sum);
+        };
+        // Cada neurônio soma o viés aos produtos entre entradas e pesos. Quatro
+        // neurônios por vez: as quatro somas são independentes e se sobrepõem na
+        // CPU (ILP). A ordem de soma de cada neurônio não muda.
+        int i = 0;
+        for (; i + 4 <= out_features; i += 4) {
+            const float* w0 = weights[i].data();
+            const float* w1 = weights[i + 1].data();
+            const float* w2 = weights[i + 2].data();
+            const float* w3 = weights[i + 3].data();
+            float s0 = bias[i], s1 = bias[i + 1], s2 = bias[i + 2], s3 = bias[i + 3];
+            for (int j = 0; j < in_features; ++j) {
+                s0 += input[j] * w0[j];
+                s1 += input[j] * w1[j];
+                s2 += input[j] * w2[j];
+                s3 += input[j] * w3[j];
+            }
+            ativar(i, s0);
+            ativar(i + 1, s1);
+            ativar(i + 2, s2);
+            ativar(i + 3, s3);
+        }
+        for (; i < out_features; ++i) {
             float sum = bias[i];
             for (int j = 0; j < in_features; ++j) {
                 sum += input[j] * weights[i][j];
             }
-            last_z[i] = sum;
-            // As camadas ocultas usam ReLU. A última devolve escores lineares.
-            out[i] = final ? sum : max(0.0f, sum);
+            ativar(i, sum);
         }
         return out;
     }
