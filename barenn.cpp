@@ -118,25 +118,30 @@ public:
 
         // Um passe por linha de pesos (contíguo). O gradiente do peso é delta
         // vezes a entrada; o do viés é o próprio delta.
+        // d é copiado para um escalar: lendo delta[i] dentro do laço, o compilador
+        // teria de supor que as escritas em gi/gw podem alterá-lo.
+        const float* x = input.data();
         if (grad_in) {
             grad_in->assign(in_features, 0.0f);
             float* gi = grad_in->data();
             for (int i = 0; i < out_features; ++i) {
+                const float d = delta[i];
                 const float* w = weights[i].data();
                 float* gw = g.w[i].data();
                 for (int j = 0; j < in_features; ++j) {
-                    gi[j] += delta[i] * w[j];
-                    gw[j] += delta[i] * input[j];
+                    gi[j] += d * w[j];
+                    gw[j] += d * x[j];
                 }
-                g.b[i] += delta[i];
+                g.b[i] += d;
             }
         } else {
             for (int i = 0; i < out_features; ++i) {
+                const float d = delta[i];
                 float* gw = g.w[i].data();
                 for (int j = 0; j < in_features; ++j) {
-                    gw[j] += delta[i] * input[j];
+                    gw[j] += d * x[j];
                 }
-                g.b[i] += delta[i];
+                g.b[i] += d;
             }
         }
     }
