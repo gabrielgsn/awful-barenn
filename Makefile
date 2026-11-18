@@ -17,7 +17,10 @@ NVCCFLAGS ?= -O3 -std=c++17 -arch=sm_86 -lineinfo
 barenn_cuda: barenn.cu barenn.cpp
 	$(NVCC) $(NVCCFLAGS) barenn.cu -o barenn_cuda
 
+check-cuda: barenn_cuda
+	./compara.sh ./barenn_cuda golden_lote32.txt optdigits.tra optdigits.tes 32
+
 clean:
 	rm -f barenn barenn_cuda
 
-.PHONY: check bench clean
+.PHONY: check check-cuda bench clean
