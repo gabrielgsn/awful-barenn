@@ -127,6 +127,10 @@ int main(int argc, char** argv) {
         }
         vector<float> h_perda(static_cast<size_t>(epocas) * n_treino);
 
+        // O driver inicializa o contexto CUDA na primeira chamada (~190 ms). Isso é
+        // um custo único do programa, não do treino, então fica fora do cronômetro.
+        CUDA_OK(cudaFree(nullptr));
+
         // A medição inclui as cópias Host->Device e Device->Host, a alocação e o
         // treino de todas as épocas, até a GPU terminar.
         const auto inicio = chrono::steady_clock::now();
