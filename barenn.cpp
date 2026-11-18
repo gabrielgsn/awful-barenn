@@ -46,7 +46,7 @@ public:
         }
     }
 
-    vector<float> Forward(vector<float> input) {
+    vector<float> Forward(const vector<float>& input) {
         last_input = input;
         last_z.resize(out_features);
         vector<float> out(out_features);
@@ -86,7 +86,7 @@ public:
         return out;
     }
 
-    vector<float> Backward(vector<float> grad_out, float learning_rate) {
+    vector<float> Backward(const vector<float>& grad_out, float learning_rate) {
         // Delta é o gradiente da perda em relação à soma antes da ativação.
         // Na ReLU, o gradiente passa apenas quando essa soma é positiva.
         vector<float> delta(out_features);
