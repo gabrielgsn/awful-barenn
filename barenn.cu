@@ -66,16 +66,12 @@ struct Estado {
     float d3[max_lote * N3], d2[max_lote * N2], d1[max_lote * N1];
 };
 
-// Um lote de n amostras (x e y já apontam para o início do lote): forward, perda,
-// backward e atualização, com __syncthreads() entre as etapas. Todas as threads do
-// bloco chamam esta função. A soma de cada neurônio segue a ordem da CPU (j
-// crescente, a partir do viés); o gradiente soma as amostras em ordem crescente.
-__device__ void lote(Estado& e, const float* x, const int* y, int n, float taxa,
-                     float* perda_amostra) {
+// Um lote de n amostras (e.x já tem as imagens; y aponta para os rótulos do lote):
+// forward, perda, backward e atualização, com __syncthreads() entre as etapas. Todas
+// as threads do bloco chamam esta função. A soma de cada neurônio segue a ordem da
+// CPU (j crescente, a partir do viés); o gradiente soma as amostras em ordem crescente.
+__device__ void lote(Estado& e, const int* y, int n, float taxa, float* perda_amostra) {
     const int t = threadIdx.x;
-    for (int k = t; k < n * N0; k += threads) e.x[k] = x[k];
-    __syncthreads();
-
     if (t < n * N1) {
         int s = t / N1, i = t % N1;
         float sum = e.b1[i];
@@ -129,19 +125,49 @@ __device__ void lote(Estado& e, const float* x, const int* y, int n, float taxa,
     __syncthreads();
 }
 
-// Um lançamento por lote: carrega os pesos da memória global, treina o lote e guarda.
-__global__ void treinar_lote(float* w1, float* b1, float* w2, float* b2, float* w3,
-                             float* b3, const float* x, const int* y, int n,
-                             float taxa, float* perda_amostra) {
+// Kernel persistente: um único lançamento treina todas as épocas e todos os lotes.
+// Os pesos ficam na memória compartilhada do começo ao fim (carregados e guardados
+// uma vez). O x do próximo lote é lido da memória global para registradores no
+// começo do lote atual (2 float por thread, o lote tem no máximo 2048), para a
+// latência da leitura se sobrepor ao cálculo.
+__global__ void treinar(float* w1, float* b1, float* w2, float* b2, float* w3,
+                        float* b3, const float* x, const int* y, int n_treino,
+                        int tam_lote, int epocas, float taxa, float* perda) {
+    static_assert(threads * 2 == max_lote * N0, "2 float por thread cobrem um lote");
     __shared__ Estado e;
+    const int t = threadIdx.x;
     carregar(e.w1, w1, N0, N1);
     carregar(e.w2, w2, N1, N2);
     carregar(e.w3, w3, N2, N3);
-    for (int k = threadIdx.x; k < N1; k += threads) e.b1[k] = b1[k];
-    for (int k = threadIdx.x; k < N2; k += threads) e.b2[k] = b2[k];
-    for (int k = threadIdx.x; k < N3; k += threads) e.b3[k] = b3[k];
-    __syncthreads();
-    lote(e, x, y, n, taxa, perda_amostra);
+    for (int k = t; k < N1; k += threads) e.b1[k] = b1[k];
+    for (int k = t; k < N2; k += threads) e.b2[k] = b2[k];
+    for (int k = t; k < N3; k += threads) e.b3[k] = b3[k];
+
+    const int lotes = (n_treino + tam_lote - 1) / tam_lote;
+    const int total = epocas * lotes;
+    // Prefetch do primeiro lote.
+    float p0 = 0, p1 = 0;
+    {
+        const int n = min(tam_lote, n_treino);
+        if (t < n * N0) p0 = x[t];
+        if (t + threads < n * N0) p1 = x[t + threads];
+    }
+    for (int g = 0; g < total; ++g) {
+        const int epoca = g / lotes, ini = (g % lotes) * tam_lote;
+        const int n = min(tam_lote, n_treino - ini);
+        // Os registradores do prefetch viram o x do lote atual.
+        if (t < n * N0) e.x[t] = p0;
+        if (t + threads < n * N0) e.x[t + threads] = p1;
+        __syncthreads();
+        // Dispara a leitura do lote seguinte, que se sobrepõe ao cálculo abaixo.
+        if (g + 1 < total) {
+            const int ini_p = ((g + 1) % lotes) * tam_lote;
+            const int n_p = min(tam_lote, n_treino - ini_p);
+            if (t < n_p * N0) p0 = x[ini_p * N0 + t];
+            if (t + threads < n_p * N0) p1 = x[ini_p * N0 + t + threads];
+        }
+        lote(e, y + ini, n, taxa, perda + static_cast<size_t>(epoca) * n_treino + ini);
+    }
     guardar(w1, e.w1, N0, N1);
     guardar(w2, e.w2, N1, N2);
     guardar(w3, e.w3, N2, N3);
@@ -218,14 +244,9 @@ int main(int argc, char** argv) {
                                sizeof(float) * tam[l + 1], cudaMemcpyHostToDevice));
         }
 
-        for (int epoca = 0; epoca < epocas; ++epoca) {
-            for (size_t ini = 0; ini < n_treino; ini += lote_tam) {
-                const int n = static_cast<int>(min<size_t>(lote_tam, n_treino - ini));
-                treinar_lote<<<1, threads>>>(dw[0], db[0], dw[1], db[1], dw[2], db[2],
-                                             d_x + ini * N0, d_y + ini, n, taxa,
-                                             d_perda + static_cast<size_t>(epoca) * n_treino + ini);
-            }
-        }
+        // Um único lançamento para o treino inteiro.
+        treinar<<<1, threads>>>(dw[0], db[0], dw[1], db[1], dw[2], db[2], d_x, d_y,
+                                static_cast<int>(n_treino), lote_tam, epocas, taxa, d_perda);
         CUDA_OK(cudaGetLastError());
 
         // Pesos e perdas de volta para a CPU (a avaliação roda na CPU).
