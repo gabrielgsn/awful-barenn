@@ -86,7 +86,9 @@ public:
         return out;
     }
 
-    vector<float> Backward(const vector<float>& grad_out, float learning_rate) {
+    // A primeira camada não precisa do gradiente da entrada: não há camada antes dela.
+    vector<float> Backward(const vector<float>& grad_out, float learning_rate,
+                           bool precisa_grad_in = true) {
         // Delta é o gradiente da perda em relação à soma antes da ativação.
         // Na ReLU, o gradiente passa apenas quando essa soma é positiva.
         vector<float> delta(out_features);
@@ -98,13 +100,23 @@ public:
         // Um passe por linha de pesos (contíguo): acumula o gradiente da entrada
         // com o peso anterior à atualização e depois aplica o SGD por amostra.
         // O gradiente do peso é delta vezes a entrada; o do viés é o próprio delta.
-        vector<float> grad_in(in_features, 0.0f);
-        for (int i = 0; i < out_features; ++i) {
-            for (int j = 0; j < in_features; ++j) {
-                grad_in[j] += delta[i] * weights[i][j];
-                weights[i][j] -= learning_rate * (delta[i] * last_input[j]);
+        vector<float> grad_in;
+        if (precisa_grad_in) {
+            grad_in.assign(in_features, 0.0f);
+            for (int i = 0; i < out_features; ++i) {
+                for (int j = 0; j < in_features; ++j) {
+                    grad_in[j] += delta[i] * weights[i][j];
+                    weights[i][j] -= learning_rate * (delta[i] * last_input[j]);
+                }
+                bias[i] -= learning_rate * delta[i];
             }
-            bias[i] -= learning_rate * delta[i];
+        } else {
+            for (int i = 0; i < out_features; ++i) {
+                for (int j = 0; j < in_features; ++j) {
+                    weights[i][j] -= learning_rate * (delta[i] * last_input[j]);
+                }
+                bias[i] -= learning_rate * delta[i];
+            }
         }
         return grad_in;
     }
@@ -302,7 +314,7 @@ int main(int argc, char** argv) {
                 // Cada Backward também atualiza os parâmetros da sua camada.
                 auto grad3 = l3.Backward(gradiente, taxa);
                 auto grad2 = l2.Backward(grad3, taxa);
-                l1.Backward(grad2, taxa);
+                l1.Backward(grad2, taxa, false);
             }
             perdas[epoca] = perda_total / treino.size();
         }
