@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <omp.h>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -411,6 +412,11 @@ int main(int argc, char** argv) {
             for (size_t ini = 0; ini < treino.size(); ini += lote) {
                 const size_t fim = min(ini + lote, treino.size());
                 const int n_blocos = static_cast<int>((fim - ini + bloco - 1) / bloco);
+                // Cada bloco só escreve nos próprios buffers e as camadas são só
+                // lidas aqui, então os blocos rodam em paralelo sem sincronização.
+                // Nunca mais threads que blocos: as sobrantes só esperariam na barreira.
+                #pragma omp parallel for schedule(static) if (n_blocos > 1) \
+                    num_threads(min(n_blocos, omp_get_max_threads()))
                 for (int b = 0; b < n_blocos; ++b) {
                     const size_t b_ini = ini + static_cast<size_t>(b) * bloco;
                     processar(trab[b], b_ini, min(b_ini + bloco, fim));
