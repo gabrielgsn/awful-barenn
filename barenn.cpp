@@ -21,6 +21,19 @@ namespace Barenn {
 constexpr int entradas = 64;
 constexpr int classes = 10;
 
+// Gradientes de uma camada, somados ao longo das amostras de um bloco.
+struct Grad {
+    vector<vector<float>> w;
+    vector<float> b;
+
+    void zerar() {
+        for (auto& linha : w) {
+            fill(linha.begin(), linha.end(), 0.0f);
+        }
+        fill(b.begin(), b.end(), 0.0f);
+    }
+};
+
 class DenseLayer {
     int in_features;
     int out_features;
@@ -28,9 +41,6 @@ class DenseLayer {
     // weights[i][j] liga a entrada j ao neurônio de saída i.
     vector<vector<float>> weights;
     vector<float> bias;
-    // Dados do último forward usados para calcular os gradientes.
-    vector<float> last_input;
-    vector<float> last_z;
 
 public:
     DenseLayer(int input_size, int output_size, bool is_final = false)
@@ -46,13 +56,20 @@ public:
         }
     }
 
-    vector<float> Forward(const vector<float>& input) {
-        last_input = input;
-        last_z.resize(out_features);
-        vector<float> out(out_features);
+    Grad NovoGrad() const {
+        return {vector<vector<float>>(out_features, vector<float>(in_features)),
+                vector<float>(out_features)};
+    }
+
+    // z (soma antes da ativação) e out pertencem ao chamador: a camada não guarda
+    // estado de nenhuma amostra, então várias threads podem usá-la ao mesmo tempo.
+    void Forward(const vector<float>& input, vector<float>& z,
+                 vector<float>& out) const {
+        z.resize(out_features);
+        out.resize(out_features);
         // As camadas ocultas usam ReLU. A última devolve escores lineares.
         auto ativar = [&](int i, float sum) {
-            last_z[i] = sum;
+            z[i] = sum;
             out[i] = final ? sum : max(0.0f, sum);
         };
         // Cada neurônio soma o viés aos produtos entre entradas e pesos. Quatro
@@ -83,43 +100,86 @@ public:
             }
             ativar(i, sum);
         }
-        return out;
     }
 
-    // A primeira camada não precisa do gradiente da entrada: não há camada antes dela.
-    vector<float> Backward(const vector<float>& grad_out, float learning_rate,
-                           bool precisa_grad_in = true) {
+    // Soma em g os gradientes dos pesos e do viés desta amostra. Os pesos só mudam
+    // em Aplicar. grad_in recebe o gradiente da entrada; a primeira camada passa
+    // nullptr, porque não há camada antes dela.
+    void Backward(const vector<float>& input, const vector<float>& z,
+                  const vector<float>& grad_out, vector<float>& delta,
+                  vector<float>* grad_in, Grad& g) const {
         // Delta é o gradiente da perda em relação à soma antes da ativação.
         // Na ReLU, o gradiente passa apenas quando essa soma é positiva.
-        vector<float> delta(out_features);
+        delta.resize(out_features);
         for (int i = 0; i < out_features; ++i) {
             delta[i] = final ? grad_out[i]
-                             : grad_out[i] * (last_z[i] > 0.0f ? 1.0f : 0.0f);
+                             : grad_out[i] * (z[i] > 0.0f ? 1.0f : 0.0f);
         }
 
-        // Um passe por linha de pesos (contíguo): acumula o gradiente da entrada
-        // com o peso anterior à atualização e depois aplica o SGD por amostra.
-        // O gradiente do peso é delta vezes a entrada; o do viés é o próprio delta.
-        vector<float> grad_in;
-        if (precisa_grad_in) {
-            grad_in.assign(in_features, 0.0f);
+        // Um passe por linha de pesos (contíguo). O gradiente do peso é delta
+        // vezes a entrada; o do viés é o próprio delta.
+        // d é copiado para um escalar: lendo delta[i] dentro do laço, o compilador
+        // teria de supor que as escritas em gi/gw podem alterá-lo.
+        const float* x = input.data();
+        if (grad_in) {
+            grad_in->assign(in_features, 0.0f);
+            float* gi = grad_in->data();
             for (int i = 0; i < out_features; ++i) {
+                const float d = delta[i];
+                const float* w = weights[i].data();
+                float* gw = g.w[i].data();
                 for (int j = 0; j < in_features; ++j) {
-                    grad_in[j] += delta[i] * weights[i][j];
-                    weights[i][j] -= learning_rate * (delta[i] * last_input[j]);
+                    gi[j] += d * w[j];
+                    gw[j] += d * x[j];
                 }
-                bias[i] -= learning_rate * delta[i];
+                g.b[i] += d;
             }
         } else {
             for (int i = 0; i < out_features; ++i) {
+                const float d = delta[i];
+                float* gw = g.w[i].data();
                 for (int j = 0; j < in_features; ++j) {
-                    weights[i][j] -= learning_rate * (delta[i] * last_input[j]);
+                    gw[j] += d * x[j];
                 }
-                bias[i] -= learning_rate * delta[i];
+                g.b[i] += d;
             }
         }
-        return grad_in;
     }
+
+    // SGD: w -= taxa * (soma dos gradientes dos n blocos, sempre na ordem 0..n-1).
+    // A soma é feita no gradiente do bloco 0, que é zerado antes do próximo lote.
+    template <class F>
+    void Aplicar(int n, float taxa, F grad_do_bloco) {
+        Grad& soma = grad_do_bloco(0);
+        for (int b = 1; b < n; ++b) {
+            const Grad& gb = grad_do_bloco(b);
+            for (int i = 0; i < out_features; ++i) {
+                float* s = soma.w[i].data();
+                const float* x = gb.w[i].data();
+                for (int j = 0; j < in_features; ++j) {
+                    s[j] += x[j];
+                }
+                soma.b[i] += gb.b[i];
+            }
+        }
+        for (int i = 0; i < out_features; ++i) {
+            float* w = weights[i].data();
+            const float* s = soma.w[i].data();
+            for (int j = 0; j < in_features; ++j) {
+                w[j] -= taxa * s[j];
+            }
+            bias[i] -= taxa * soma.b[i];
+        }
+    }
+};
+
+// Buffers de trabalho de um bloco de amostras (um conjunto por bloco, nunca
+// compartilhado entre threads).
+struct Trabalho {
+    array<vector<float>, 3> z, a, delta, grad_in;
+    array<Grad, 3> g;
+    vector<float> erro;
+    double perda = 0;
 };
 
 struct Amostra {
@@ -202,9 +262,13 @@ void avaliar(DenseLayer& l1, DenseLayer& l2, DenseLayer& l3,
     double perda_total = 0;
 
     // Só fazemos forward aqui. Os pesos ficam fixos.
+    Trabalho t;
     for (size_t i = 0; i < teste.size(); ++i) {
         const auto& amostra = teste[i];
-        auto escores = l3.Forward(l2.Forward(l1.Forward(amostra.imagem)));
+        l1.Forward(amostra.imagem, t.z[0], t.a[0]);
+        l2.Forward(t.a[0], t.z[1], t.a[1]);
+        l3.Forward(t.a[1], t.z[2], t.a[2]);
+        const auto& escores = t.a[2];
         // O índice do maior escore indica a classe prevista.
         int previsto = static_cast<int>(
             max_element(escores.begin(), escores.end()) - escores.begin());
@@ -278,14 +342,20 @@ void avaliar(DenseLayer& l1, DenseLayer& l2, DenseLayer& l3,
 } // namespace Barenn
 
 int main(int argc, char** argv) {
-    if (argc != 1 && argc != 3) {
-        cerr << "Uso: " << argv[0] << " [arquivo_treino arquivo_teste]\n";
+    if (argc != 1 && argc != 3 && argc != 4) {
+        cerr << "Uso: " << argv[0] << " [arquivo_treino arquivo_teste [lote]]\n";
         return 1;
     }
-    const string arquivo_treino = argc == 3 ? argv[1] : "optdigits.tra";
-    const string arquivo_teste = argc == 3 ? argv[2] : "optdigits.tes";
+    const string arquivo_treino = argc >= 3 ? argv[1] : "optdigits.tra";
+    const string arquivo_teste = argc >= 3 ? argv[2] : "optdigits.tes";
 
     try {
+        // Amostras entre duas atualizações dos pesos. O padrão, 1, é o SGD por
+        // amostra do código original.
+        int lote = 1;
+        if (argc == 4 && (!(istringstream(argv[3]) >> lote) || lote < 1)) {
+            throw runtime_error("O lote deve ser um inteiro maior ou igual a 1.");
+        }
         const auto treino = Barenn::ler_dados(arquivo_treino);
         const auto teste = Barenn::ler_dados(arquivo_teste);
         if (filesystem::equivalent(arquivo_treino, arquivo_teste)) {
@@ -298,23 +368,62 @@ int main(int argc, char** argv) {
         Barenn::DenseLayer l1(Barenn::entradas, 32);
         Barenn::DenseLayer l2(32, 16);
         Barenn::DenseLayer l3(16, Barenn::classes, true);
-        vector<float> gradiente(Barenn::classes);
         array<double, epocas> perdas{};
 
-        // A medição inclui forward, perda e backward de todas as épocas.
+        // Os pesos só são atualizados a cada lote de amostras (lote 1 = SGD por
+        // amostra, como no código original). Cada lote se divide em blocos de
+        // `bloco` amostras; cada bloco acumula o seu gradiente e os blocos são
+        // somados sempre na mesma ordem, então o resultado não depende de quem
+        // calcula cada bloco.
+        constexpr int bloco = 4;
+        const int max_blocos = (lote + bloco - 1) / bloco;
+        vector<Barenn::Trabalho> trab(max_blocos);
+        for (auto& t : trab) {
+            t.g = {l1.NovoGrad(), l2.NovoGrad(), l3.NovoGrad()};
+        }
+
+        // Forward, perda e backward (acumulando gradientes) das amostras [ini, fim).
+        auto processar = [&](Barenn::Trabalho& t, size_t ini, size_t fim) {
+            for (auto& g : t.g) {
+                g.zerar();
+            }
+            t.perda = 0;
+            t.erro.resize(Barenn::classes);
+            for (size_t s = ini; s < fim; ++s) {
+                const auto& amostra = treino[s];
+                l1.Forward(amostra.imagem, t.z[0], t.a[0]);
+                l2.Forward(t.a[0], t.z[1], t.a[1]);
+                l3.Forward(t.a[1], t.z[2], t.a[2]);
+                t.perda += Barenn::perda(t.a[2], amostra.rotulo, &t.erro);
+
+                // Propaga o gradiente da última camada até a primeira.
+                l3.Backward(t.a[1], t.z[2], t.erro, t.delta[2], &t.grad_in[2], t.g[2]);
+                l2.Backward(t.a[0], t.z[1], t.grad_in[2], t.delta[1], &t.grad_in[1], t.g[1]);
+                l1.Backward(amostra.imagem, t.z[0], t.grad_in[1], t.delta[0], nullptr, t.g[0]);
+            }
+        };
+
+        // A medição inclui forward, perda, backward e atualização de todas as épocas.
         const auto inicio = chrono::steady_clock::now();
         for (int epoca = 0; epoca < epocas; ++epoca) {
             double perda_total = 0;
             // Uma época percorre todo o conjunto na ordem do arquivo.
-            for (const auto& amostra : treino) {
-                auto escores = l3.Forward(l2.Forward(l1.Forward(amostra.imagem)));
-                perda_total += Barenn::perda(escores, amostra.rotulo, &gradiente);
-
-                // Propaga o gradiente da última camada até a primeira.
-                // Cada Backward também atualiza os parâmetros da sua camada.
-                auto grad3 = l3.Backward(gradiente, taxa);
-                auto grad2 = l2.Backward(grad3, taxa);
-                l1.Backward(grad2, taxa, false);
+            for (size_t ini = 0; ini < treino.size(); ini += lote) {
+                const size_t fim = min(ini + lote, treino.size());
+                const int n_blocos = static_cast<int>((fim - ini + bloco - 1) / bloco);
+                for (int b = 0; b < n_blocos; ++b) {
+                    const size_t b_ini = ini + static_cast<size_t>(b) * bloco;
+                    processar(trab[b], b_ini, min(b_ini + bloco, fim));
+                }
+                for (int b = 0; b < n_blocos; ++b) {
+                    perda_total += trab[b].perda;
+                }
+                // Soma (não média) dos gradientes do lote: cada amostra pesa como no
+                // SGD por amostra. Com lote 64 e taxa 0,02 o treino diverge.
+                const float passo = taxa;
+                l1.Aplicar(n_blocos, passo, [&](int b) -> Barenn::Grad& { return trab[b].g[0]; });
+                l2.Aplicar(n_blocos, passo, [&](int b) -> Barenn::Grad& { return trab[b].g[1]; });
+                l3.Aplicar(n_blocos, passo, [&](int b) -> Barenn::Grad& { return trab[b].g[2]; });
             }
             perdas[epoca] = perda_total / treino.size();
         }

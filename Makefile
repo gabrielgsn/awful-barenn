@@ -5,7 +5,8 @@ barenn: barenn.cpp
 	$(CXX) $(CXXFLAGS) barenn.cpp -o barenn
 
 check: barenn
-	./check.sh
+	./check.sh ./barenn golden.txt
+	./check.sh ./barenn golden_lote32.txt optdigits.tra optdigits.tes 32
 
 bench: barenn
 	./bench.sh
