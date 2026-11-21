@@ -1,56 +1,56 @@
-# Barenn: relatório executivo (legado -> CPU otimizada -> CUDA)
+# Barenn: resumo da entrega
 
-Fork de `emil-freme/awful-barenn`. MLP 64-32-16-10 (2.778 parâmetros) para `optdigits`, 51 épocas. Cada degrau de desempenho é um **bloco lógico**: uma issue (diagnóstico, hipótese, métrica base), uma branch `issue/NN`, commits semânticos, validação da saída, medição, uma **tag anotada** e um comentário de resultado na issue com a discussão. O texto original do enunciado está mais abaixo.
+Fork de `emil-freme/awful-barenn`. A rede é uma MLP 64-32-16-10 (2.778 pesos) que classifica os dígitos do `optdigits` em 51 épocas. Cada otimização tem uma issue com diagnóstico, hipótese e métrica base, uma branch `issue/NN`, uma tag anotada e um comentário com o resultado. O enunciado original está depois deste resumo.
 
-## Resultado consolidado
+## Resultados
 
-Medido numa **única sessão** (`aps2` issue #12): container Ubuntu 22.04, i7-11800H (8 núcleos / 16 threads), 15 GB, RTX 3050 Laptop (16 SMs, driver 610.60), g++ 11.4 `-O3`, `nvcc` 12.6 (`-arch=sm_86`), `optdigits.tra`/`.tes`. Tempo de treino: média das medianas de 2 rodadas alternadas, N = 15 por rodada. Os dados completos (mediana, mínimo, máximo e desvio por rodada) estão na [issue #12](https://github.com/gabrielgsn/awful-barenn/issues/12).
+Todas as versões foram medidas na mesma sessão, no container Ubuntu 22.04 de `docker/Dockerfile`: i7-11800H (8 núcleos, 16 threads), 15 GB de RAM, RTX 3050 Laptop (16 SMs, driver 610.60), g++ 11.4 com `-O3` e `nvcc` 12.6 com `-arch=sm_86`. O tempo é só o do treino: média das medianas de 2 rodadas alternadas, com 15 execuções por rodada. Os dados completos estão na [issue #12](https://github.com/gabrielgsn/awful-barenn/issues/12).
 
-| Versão | Tag | Tempo de treino | Speedup sobre o legado | Acurácia (teste) |
+| Versão | Tag | Tempo de treino | Speedup sobre o legado | Acurácia |
 |:--|:--|--:|--:|--:|
-| **Baseline Legado** | [`v0.0-baseline`](https://github.com/gabrielgsn/awful-barenn/tree/v0.0-baseline) | 1,249 s | 1,0x | 95,5% |
-| **CPU Otimizada** (sequencial, saída idêntica ao legado) | [`v0.5-sem-grad-in`](https://github.com/gabrielgsn/awful-barenn/tree/v0.5-sem-grad-in) | 0,335 s | 3,7x | 95,5% |
-| **CPU Otimizada** (mini-batch 32 + OpenMP, 4 threads) | [`v0.7-openmp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.7-openmp) | 0,184 s | 6,8x | 96,4% |
-| **CUDA Inicial** | [`v1.0-cuda-inicial`](https://github.com/gabrielgsn/awful-barenn/tree/v1.0-cuda-inicial) | 0,532 s | 2,3x (**2,9x mais lenta** que a CPU de 4 threads) | 96,4% |
-| **CUDA Otimizado** (kernel persistente em memória compartilhada) | [`v1.2-cuda-avancado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.2-cuda-avancado) | 0,1035 s | **12,1x** (**1,8x** mais rápida que a CPU de 4 threads; 5,1x sobre a CUDA inicial) | 96,4% |
+| Baseline Legado | [`v0.0-baseline`](https://github.com/gabrielgsn/awful-barenn/tree/v0.0-baseline) | 1,249 s | 1,0x | 95,5% |
+| CPU Otimizada, sequencial | [`v0.5-sem-grad-in`](https://github.com/gabrielgsn/awful-barenn/tree/v0.5-sem-grad-in) | 0,335 s | 3,7x | 95,5% |
+| CPU Otimizada, lote 32 e OpenMP com 4 threads | [`v0.7-openmp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.7-openmp) | 0,184 s | 6,8x | 96,4% |
+| CUDA Inicial | [`v1.0-cuda-inicial`](https://github.com/gabrielgsn/awful-barenn/tree/v1.0-cuda-inicial) | 0,532 s | 2,3x | 96,4% |
+| CUDA Otimizado, kernel persistente | [`v1.2-cuda-avancado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.2-cuda-avancado) | 0,1035 s | 12,1x | 96,4% |
 
-Leitura honesta dos números:
+Observações:
 
-- As versões de **mini-batch (lote 32)** são **outro algoritmo** (os pesos finais deixam de ser os do legado). O lote 1 reproduz o legado exatamente; o lote 32 tem acurácia 96,4%, contra 95,5%. O speedup de `v0.6` em diante mistura ganho de engenharia e mudança de algoritmo, por isso a linha sequencial idêntica ao legado (3,7x) vem separada.
-- A primeira CUDA é **mais lenta que a CPU**: 67.320 lançamentos de kernel para um problema de 2.778 pesos. O ganho da GPU vem de fundir e depois persistir o kernel, não de "mais paralelismo".
-- A máquina varia entre rodadas (legado: 1,36 s e 1,13 s nas duas rodadas): os speedups têm incerteza de alguns por cento, e a ordem das versões é o que se pode afirmar com segurança.
-- A GPU usa **1 SM de 16** (Nsight Compute: 6,25% dos ciclos de SM; ocupação real = teórica = 66,7%). O lote máximo da CUDA é 32 e a taxa de aprendizado atual diverge com lote 64 (issue #7).
+- A partir do lote 32 o algoritmo muda: os pesos são atualizados a cada 32 amostras, então o resultado final não é o do legado. Com lote 1 a saída é idêntica à do legado. Por isso a versão sequencial (3,7x, mesma saída) aparece separada.
+- A primeira versão CUDA é 2,9x mais lenta que a CPU com 4 threads, porque lança 67.320 kernels pequenos. A versão final é 1,8x mais rápida que essa CPU e 5,1x mais rápida que a CUDA inicial.
+- O tempo varia entre rodadas (o legado deu 1,36 s numa e 1,13 s na outra), então os speedups têm alguns por cento de incerteza.
+- A GPU usa só 1 dos 16 SMs (Nsight Compute: 6,25% dos ciclos de SM da GPU e ocupação de 66,7% nesse SM). A versão CUDA aceita lote de até 32, e com a taxa atual o treino diverge com lote 64 (issue #7).
 
-## Índice: issue, tag e branch de cada bloco
+## Issues e tags
 
-| # | Bloco | Branch | Tag anotada | Resultado |
-|:-:|:--|:--|:--|:--|
-| [#1](https://github.com/gabrielgsn/awful-barenn/issues/1) | Baseline reproduzível e profiling (callgrind) | `issue/01` | [`v0.0-baseline`](https://github.com/gabrielgsn/awful-barenn/tree/v0.0-baseline) | referência; `Backward` 67,7% e `Forward` 23,8% das instruções |
-| [#2](https://github.com/gabrielgsn/awful-barenn/issues/2) | Compilar com `-O3` (vetorização automática) | `issue/02` | [`v0.1-flags-O3`](https://github.com/gabrielgsn/awful-barenn/tree/v0.1-flags-O3) | 1,5x; `-march=native` descartado (muda a saída e fica mais lento) |
-| [#3](https://github.com/gabrielgsn/awful-barenn/issues/3) | `Backward` por linha, fundido com a atualização | `issue/03` | [`v0.2-backward-por-linha`](https://github.com/gabrielgsn/awful-barenn/tree/v0.2-backward-por-linha) | 1,6x sobre `v0.1`; acesso estridado e cache |
-| [#4](https://github.com/gabrielgsn/awful-barenn/issues/4) | `Forward` com 4 neurônios por vez (ILP) | `issue/04` | [`v0.3-forward-ilp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.3-forward-ilp) | ~1,3x; gargalo era latência da cadeia de somas |
-| [#5](https://github.com/gabrielgsn/awful-barenn/issues/5) | Evitar cópias de vetores por valor | `issue/05` | [`v0.4-sem-copias`](https://github.com/gabrielgsn/awful-barenn/tree/v0.4-sem-copias) | ganho pequeno, confirmado por contagem de instruções e de `malloc` |
-| [#6](https://github.com/gabrielgsn/awful-barenn/issues/6) | Não calcular `grad_in` da primeira camada | `issue/06` | [`v0.5-sem-grad-in`](https://github.com/gabrielgsn/awful-barenn/tree/v0.5-sem-grad-in) | trabalho morto; sequencial total ~3,7x sobre o legado |
-| [#7](https://github.com/gabrielgsn/awful-barenn/issues/7) | Mini-batch SGD serial, camadas sem estado | `issue/07` | [`v0.6-minibatch`](https://github.com/gabrielgsn/awful-barenn/tree/v0.6-minibatch) | lote 1 = legado; lote 32 converge (96,4%); lote 64 diverge |
-| [#8](https://github.com/gabrielgsn/awful-barenn/issues/8) | OpenMP sobre os blocos do lote | `issue/08` | [`v0.7-openmp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.7-openmp) | 1,7x a 1,9x com 4 threads; saída idêntica com 1 a 16 threads; Amdahl e custo de sincronização |
-| [#9](https://github.com/gabrielgsn/awful-barenn/issues/9) | CUDA: porte funcional | `issue/09` | [`v1.0-cuda-inicial`](https://github.com/gabrielgsn/awful-barenn/tree/v1.0-cuda-inicial) | mais lenta que a CPU: limitada por lançamento (Nsight Systems e Compute) |
-| [#10](https://github.com/gabrielgsn/awful-barenn/issues/10) | CUDA: contexto fora do cronômetro e kernel fundido (memória compartilhada) | `issue/10` | [`v1.1-cuda-otimizado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.1-cuda-otimizado) | 4,1x sobre a CUDA inicial; conflitos de banco < 1% |
-| [#11](https://github.com/gabrielgsn/awful-barenn/issues/11) | CUDA: kernel persistente com prefetch | `issue/11` | [`v1.2-cuda-avancado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.2-cuda-avancado) | 1,26x sobre `v1.1`; roofline e Nsight Compute |
-| [#12](https://github.com/gabrielgsn/awful-barenn/issues/12) | README de entrega e comparação final (esta tabela) | `issue/12` | [`v2.0-entrega`](https://github.com/gabrielgsn/awful-barenn/tree/v2.0-entrega) | rodada única de todas as versões |
+| Issue | O que mudou | Tag | Resultado |
+|:-:|:--|:--|:--|
+| [#1](https://github.com/gabrielgsn/awful-barenn/issues/1) | Baseline e profiling com callgrind | [`v0.0-baseline`](https://github.com/gabrielgsn/awful-barenn/tree/v0.0-baseline) | `Backward` 67,7% e `Forward` 23,8% das instruções |
+| [#2](https://github.com/gabrielgsn/awful-barenn/issues/2) | Compilar com `-O3` | [`v0.1-flags-O3`](https://github.com/gabrielgsn/awful-barenn/tree/v0.1-flags-O3) | 1,5x; `-march=native` descartado (muda a saída e fica mais lento) |
+| [#3](https://github.com/gabrielgsn/awful-barenn/issues/3) | `Backward` percorrendo os pesos por linha, junto com a atualização | [`v0.2-backward-por-linha`](https://github.com/gabrielgsn/awful-barenn/tree/v0.2-backward-por-linha) | 1,6x sobre `v0.1` |
+| [#4](https://github.com/gabrielgsn/awful-barenn/issues/4) | `Forward` com 4 neurônios por vez | [`v0.3-forward-ilp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.3-forward-ilp) | 1,3x |
+| [#5](https://github.com/gabrielgsn/awful-barenn/issues/5) | Vetores por referência, sem cópias | [`v0.4-sem-copias`](https://github.com/gabrielgsn/awful-barenn/tree/v0.4-sem-copias) | ganho pequeno, com menos instruções e `malloc` |
+| [#6](https://github.com/gabrielgsn/awful-barenn/issues/6) | Sem `grad_in` na primeira camada | [`v0.5-sem-grad-in`](https://github.com/gabrielgsn/awful-barenn/tree/v0.5-sem-grad-in) | 3,7x sobre o legado no total |
+| [#7](https://github.com/gabrielgsn/awful-barenn/issues/7) | Mini-batch serial | [`v0.6-minibatch`](https://github.com/gabrielgsn/awful-barenn/tree/v0.6-minibatch) | lote 32 com 96,4%; lote 64 diverge |
+| [#8](https://github.com/gabrielgsn/awful-barenn/issues/8) | OpenMP nos blocos do lote | [`v0.7-openmp`](https://github.com/gabrielgsn/awful-barenn/tree/v0.7-openmp) | 1,7x a 1,9x com 4 threads; mesma saída de 1 a 16 threads |
+| [#9](https://github.com/gabrielgsn/awful-barenn/issues/9) | Porte para CUDA | [`v1.0-cuda-inicial`](https://github.com/gabrielgsn/awful-barenn/tree/v1.0-cuda-inicial) | mais lenta que a CPU por causa dos lançamentos de kernel |
+| [#10](https://github.com/gabrielgsn/awful-barenn/issues/10) | Contexto CUDA fora do cronômetro e um kernel por lote em memória compartilhada | [`v1.1-cuda-otimizado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.1-cuda-otimizado) | 4,1x sobre `v1.0` |
+| [#11](https://github.com/gabrielgsn/awful-barenn/issues/11) | Kernel persistente com prefetch | [`v1.2-cuda-avancado`](https://github.com/gabrielgsn/awful-barenn/tree/v1.2-cuda-avancado) | 1,26x sobre `v1.1` |
+| [#12](https://github.com/gabrielgsn/awful-barenn/issues/12) | Este resumo e a medição final | [`v2.0-entrega`](https://github.com/gabrielgsn/awful-barenn/tree/v2.0-entrega) | todas as versões na mesma sessão |
 
 ## Como reproduzir
 
 ```bash
 git checkout <tag>
-make check                 # CPU: saída idêntica a golden.txt (lote 1) e golden_lote32.txt (lote 32)
-make check-cuda            # CUDA (precisa de nvcc e GPU sm_86): dentro da tolerância de golden_lote32.txt
-./bench.sh 15 ./barenn optdigits.tra optdigits.tes 32      # mediana, mínimo, máximo e desvio
-# Ambiente de referência dos números acima:
+make check          # CPU: compara com golden.txt (lote 1) e golden_lote32.txt (lote 32)
+make check-cuda     # CUDA (precisa de nvcc e GPU sm_86): compara com tolerância
+./bench.sh 15 ./barenn optdigits.tra optdigits.tes 32
+
 docker build -t barenn-env docker
 docker run --rm --gpus all -v "$PWD":/work -w /work barenn-env make check check-cuda
 ```
 
-Observação: o `nvcc` 13.3 no Windows dá 1732 acertos e perda de treino 0,0110; o container (`nvcc` 12.6) dá 1733 e 0,0108. Mesma fonte, compiladores diferentes; ambos dentro da tolerância de `make check-cuda`.
+No Windows, com `nvcc` 13.3, a versão CUDA dá 1732 acertos e perda 0,0110. No container dá 1733 e 0,0108. Os dois passam em `make check-cuda`.
 
 ---
 # Projeto Barenn: O Legado, a Sobrevivência e o Salto para a GPU
