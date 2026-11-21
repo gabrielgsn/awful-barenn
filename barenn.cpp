@@ -6,7 +6,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -56,6 +58,10 @@ public:
             }
         }
     }
+
+    // Acesso aos parâmetros, para a versão CUDA copiá-los de e para a GPU.
+    vector<vector<float>>& Pesos() { return weights; }
+    vector<float>& Vies() { return bias; }
 
     Grad NovoGrad() const {
         return {vector<vector<float>>(out_features, vector<float>(in_features)),
@@ -342,6 +348,7 @@ void avaliar(DenseLayer& l1, DenseLayer& l2, DenseLayer& l3,
 
 } // namespace Barenn
 
+#ifndef BARENN_SEM_MAIN // barenn.cu inclui este arquivo e define o seu main
 int main(int argc, char** argv) {
     if (argc != 1 && argc != 3 && argc != 4) {
         cerr << "Uso: " << argv[0] << " [arquivo_treino arquivo_teste [lote]]\n";
@@ -449,3 +456,4 @@ int main(int argc, char** argv) {
         return 1;
     }
 }
+#endif // BARENN_SEM_MAIN
