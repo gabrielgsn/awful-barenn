@@ -21,6 +21,20 @@ Observações:
 - O tempo varia entre rodadas (o legado deu 1,36 s numa e 1,13 s na outra), então os speedups têm alguns por cento de incerteza.
 - A GPU usa só 1 dos 16 SMs (Nsight Compute: 6,25% dos ciclos de SM da GPU e ocupação de 66,7% nesse SM). A versão CUDA aceita lote de até 32, e com a taxa atual o treino diverge com lote 64 (issue #7).
 
+### No Franky
+
+Repeti a verificação e a medição no nó compute21 do Franky (job 30700, partição `pluton_gpu`, nó exclusivo): i9-14900, RTX A1000 (18 SMs, driver 570.124), g++ 14.2 e `nvcc` 12.8. As 12 tags passam em `make check`, e as de CUDA também em `make check-cuda`. Mesma metodologia: 2 rodadas alternadas de 15 execuções.
+
+| Versão | Tempo de treino | Speedup sobre o legado |
+|:--|--:|--:|
+| `v0.0-baseline` | 0,432 s | 1,0x |
+| `v0.5-sem-grad-in` | 0,166 s | 2,6x |
+| `v0.7-openmp`, 4 threads | 0,113 s | 3,8x |
+| `v1.0-cuda-inicial` | 1,864 s | 0,23x |
+| `v1.2-cuda-avancado` | 0,107 s | 4,0x |
+
+O i9 é bem mais rápido que o i7 do notebook, então os speedups ficam menores e a CPU com 4 threads quase empata com a GPU (0,113 s contra 0,107 s). A `v1.0`, presa no custo de lançar 67.320 kernels, fica 3,5x mais lenta que no notebook. O desvio entre execuções caiu para menos de 0,005 s, contra até 0,15 s no notebook.
+
 ## Issues e tags
 
 | Issue | O que mudou | Tag | Resultado |
@@ -51,6 +65,15 @@ docker run --rm --gpus all -v "$PWD":/work -w /work barenn-env make check check-
 ```
 
 No Windows, com `nvcc` 13.3, a versão CUDA dá 1732 acertos e perda 0,0110. No container dá 1733 e 0,0108. Os dois passam em `make check-cuda`.
+
+No Franky, compile no nó de login, porque os nós de computação não têm os headers da glibc, e rode com `srun`:
+
+```bash
+module load cuda/12.8.1
+make barenn barenn_cuda
+srun -p pluton_gpu --gres=gpu:1 make check check-cuda
+srun -p pluton_gpu --gres=gpu:1 ./bench.sh 15 ./barenn_cuda optdigits.tra optdigits.tes 32
+```
 
 ---
 # Projeto Barenn: O Legado, a Sobrevivência e o Salto para a GPU
